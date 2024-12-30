@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 import json
 from pathlib import Path
 from datetime import datetime
+from io import BytesIO
+import tempfile
 
 load_dotenv()
 
@@ -24,18 +26,50 @@ Don't print anything else.
 
 highlight_system_prompt = '''
 Based on the transcription provided by the user with start and end times, I want only one highlight of less than 1 minute that can be directly converted into a short. 
-Highlight it so that it's interesting and also keep the timestamps for the clip to start and end. Only select a continuous part of the video.
+Highlight it so that it's interesting and also keep the timestamps for the clip to start and end. 
+If the end time is more than length of clip make it one second less than the total length of clip. Only select a continuous part of the video.
 
 Follow this format and return valid JSON SCHEMA:
 [{
-  "start": "Start time of the clip",
+  "start": "Start time of the clip in format: HH:MM:SS, put values even if its 0",
   "content": "Highlight Text",
-  "end": "End Time for the highlighted clip"
+  "end": "End Time for the highlighted clip in format: HH:MM:SS, put values even if its 0"
 }]
 It should be one continuous clip as it will then be cut from the video and uploaded as a TikTok video. So only have one start, end, and content.
 
 Don't say anything else, just return proper JSON. No explanation.
 '''
+
+def parse_time(time_str):
+    formats = [
+        "%H:%M:%S.%f",  # hours:minutes:seconds.milliseconds
+        "%H:%M:%S",     # hours:minutes:seconds
+        "%M:%S",         # minutes:seconds
+        "%S.%f",         # seconds.milliseconds
+        "%H:%M",         # hours:minutes
+        "%M:%S.%f",      # minutes:seconds.milliseconds
+        "%H:%M:%S,%f",   # hours:minutes:seconds,milliseconds (comma separated)
+        "%H:%M,%f",      # hours:minutes,milliseconds (comma separated)
+        "%M:%S,%f",      # minutes:seconds,milliseconds (comma separated)
+        "%H:%M:%S.%f %p", # 12-hour format with AM/PM (example: 10:30:15.123 PM)
+        "%I:%M:%S.%f %p", # 12-hour format with AM/PM and milliseconds (example: 10:30:15.123 PM)
+        "%I:%M:%S %p",    # 12-hour format with AM/PM without milliseconds (example: 10:30:15 PM)
+        "%I:%M %p",       # 12-hour format with AM/PM (example: 10:30 AM)
+        "%H:%M:%S",       # for hours:minutes:seconds without milliseconds
+        "%H:%M:%S.%f",    # for hours:minutes:seconds with milliseconds
+        "%S",             # just seconds
+        "%S.%f",          # seconds with milliseconds
+        "%Y-%m-%dT%H:%M:%S.%fZ", # ISO 8601 format (example: 2024-12-30T15:30:00.123Z)
+        "%Y-%m-%d %H:%M:%S",    # ISO 8601 without milliseconds (example: 2024-12-30 15:30:00)
+    ]
+    
+    for fmt in formats:
+        try:
+            return datetime.strptime(time_str, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Time string '{time_str}' does not match any known format.")
+
 
 def save_uploaded_file(uploaded_file):
     """Save the uploaded file to a temporary directory and return the file path."""
@@ -101,8 +135,8 @@ def generate_highlights(transcription):
             # start_time = float(data_json[0]["start"])
             # end_time = float(data_json[0]["end"])
             # Convert to integers
-            start_time_int = int((datetime.strptime(data_json[0]["start"], "%H:%M:%S.%f") - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
-            end_time_int = int((datetime.strptime(data_json[0]["end"], "%H:%M:%S.%f") - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
+            start_time_int = int((parse_time(data_json[0]["start"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
+            end_time_int = int((parse_time(data_json[0]["end"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
             print("Got the start and end time ✅")
             # print(f"Start Time: {start_time}")
             # print(f"End Time: {end_time}")
@@ -119,16 +153,19 @@ def generate_highlights(transcription):
         return "none"
 
 
+from io import BytesIO
+import base64
+
 def process_video(video_file, highlight_json):
     try:
         # Parse highlight JSON
-        start_time = int((datetime.strptime(highlight_json[0]["start"], "%H:%M:%S.%f") - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
-        end_time = int((datetime.strptime(highlight_json[0]["end"], "%H:%M:%S.%f") - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
+        start_time = int((parse_time(highlight_json[0]["start"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
+        end_time = int((parse_time(highlight_json[0]["end"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
         print("Got the start and end time ✅")
         print(start_time)
         print(end_time)
+
         # Load the video
-        print("input video path:"+video_file)
         video = mp.VideoFileClip(video_file)
         # Trim video to highlight duration
         trimmed_video = video.subclipped(start_time, end_time)
@@ -140,17 +177,19 @@ def process_video(video_file, highlight_json):
             x1=x_center - new_width // 2, x2=x_center + new_width // 2
         )
         print("Cropped and trimmed ✅")
-        # Save the cropped video
-        output_path = Path("yt_short.mp4")
-        cropped_video.write_videofile(
-            str(output_path), codec="libx264", audio_codec="aac"
-        )
-        print("Saved output video ✅")
-        return output_path
+
+        # Save to a temporary file instead of BytesIO
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
+            temp_file_path = temp_file.name
+            cropped_video.write_videofile(temp_file_path, codec="libx264", audio_codec="aac")
+            print(f"Saved processed video to {temp_file_path}")
+
+        return temp_file_path
 
     except Exception as e:
         st.error(f"Error processing video: {e}")
         return None
+
 
 
 # Streamlit app interface
@@ -180,9 +219,25 @@ if video_file is not None:
                 st.session_state["highlights"] = highlights_json
 
                 # Crop Video
-                # Validate JSON format
-                input_video_path = Path("video_talk.mp4")
-                output_path = process_video(str(video_path), highlights_json)
+                # input_video_path = Path("video_talk.mp4")
+                # output_path = process_video(str(video_path), highlights_json)
+
+                # Process the video
+                processed_video_path = process_video(str(video_path), highlights_json)
+
+                if processed_video_path:
+                    st.success("Video processed successfully!")
+
+                    # Generate a download link for the processed video
+                    with open(processed_video_path, "rb") as file:
+                        video_bytes = file.read()
+
+                    st.download_button(
+                        label="Download Video",
+                        data=video_bytes,
+                        file_name="yt_short.mp4",
+                        mime="video/mp4"
+                    )
 
 
 # Display transcription and highlights side by side

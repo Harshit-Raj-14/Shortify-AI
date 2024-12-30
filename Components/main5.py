@@ -7,6 +7,7 @@ import moviepy as mp
 from dotenv import load_dotenv
 import json
 from pathlib import Path
+from datetime import datetime
 
 load_dotenv()
 
@@ -22,7 +23,7 @@ Don't print anything else.
 '''
 
 highlight_system_prompt = '''
-Based on the transcription provided by the user with start and end times, highlight the main parts in less than 1 minute that can be directly converted into a short. 
+Based on the transcription provided by the user with start and end times, I want only one highlight of less than 1 minute that can be directly converted into a short. 
 Highlight it so that it's interesting and also keep the timestamps for the clip to start and end. Only select a continuous part of the video.
 
 Follow this format and return valid JSON SCHEMA:
@@ -58,6 +59,7 @@ def extract_audio_from_video(video_file_path):
 
 def transcribe_audio(audio_file_path):
     try:
+        print("Transcribing started...")
         st.write("Transcribing audio...")
         model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
         audio_file = genai.upload_file(path=audio_file_path)
@@ -75,10 +77,11 @@ def transcribe_audio(audio_file_path):
 
 def generate_highlights(transcription):
     try:
+        print("highlighting started...")
         model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
         response = model.generate_content("highlight_system_prompt="+highlight_system_prompt+" AND transcription="+transcription)
         highlight_response = response.text.strip()
-        print((type(highlight_response)))
+        # print((type(highlight_response))) #-> list
         print(highlight_response)
         print("Highlighting Completed✅")
         if not highlight_response:
@@ -95,14 +98,14 @@ def generate_highlights(transcription):
             print(data_json)
             print(type(data_json))
             # Extract start and end times as floats
-            start_time = float(data_json[0]["start"])
-            end_time = float(data_json[0]["end"])
+            # start_time = float(data_json[0]["start"])
+            # end_time = float(data_json[0]["end"])
             # Convert to integers
-            start_time_int = int(start_time)
-            end_time_int = int(end_time)
+            start_time_int = int((datetime.strptime(data_json[0]["start"], "%H:%M:%S.%f") - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
+            end_time_int = int((datetime.strptime(data_json[0]["end"], "%H:%M:%S.%f") - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
             print("Got the start and end time ✅")
-            print(f"Start Time: {start_time}")
-            print(f"End Time: {end_time}")
+            # print(f"Start Time: {start_time}")
+            # print(f"End Time: {end_time}")
             print(f"Start Time: {start_time_int}")
             print(f"End Time: {end_time_int}")
             return data_json
@@ -116,23 +119,24 @@ def generate_highlights(transcription):
         return "none"
 
 
-def process_video(video_file, highlight_data):
+def process_video(video_file, highlight_json):
     try:
         # Parse highlight JSON
-        start_time = highlight_data["start"]
-        end_time = highlight_data["end"]
+        start_time = int((datetime.strptime(highlight_json[0]["start"], "%H:%M:%S.%f") - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
+        end_time = int((datetime.strptime(highlight_json[0]["end"], "%H:%M:%S.%f") - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
         print("Got the start and end time ✅")
         print(start_time)
         print(end_time)
         # Load the video
+        print("input video path:"+video_file)
         video = mp.VideoFileClip(video_file)
         # Trim video to highlight duration
-        trimmed_video = video.subclip(start_time, end_time)
+        trimmed_video = video.subclipped(start_time, end_time)
         # Crop to 9:16 aspect ratio
         width, height = trimmed_video.size
         new_width = int(height * 9 / 16)
         x_center = width // 2
-        cropped_video = trimmed_video.crop(
+        cropped_video = trimmed_video.cropped(
             x1=x_center - new_width // 2, x2=x_center + new_width // 2
         )
         print("Cropped and trimmed ✅")
@@ -172,24 +176,13 @@ if video_file is not None:
                 st.session_state["transcription"] = transcription_text
 
                 # Generate highlights based on the transcription
-                highlights = generate_highlights(transcription_text)
-                st.session_state["highlights"] = highlights
+                highlights_json = generate_highlights(transcription_text)
+                st.session_state["highlights"] = highlights_json
 
-                # # Crop Video
-                # # Validate JSON format
-                # if "start_time" in highlights and "end_time" in highlights:
-                #     # st.video(uploaded_video)
-
-                #     # Save the uploaded video locally
-                #     input_video_path = Path("video_talk.mp4")
-                #     # with open(input_video_path, "wb") as f:
-                #     #     f.write(uploaded_video.read())
-
-                #     # Process video
-                #     # with st.spinner("Processing video..."):
-                #     output_path = process_video(str(video_path), highlights)
-                # else:
-                #     print("Invalid JSON format. Ensure it includes 'start_time' and 'end_time'.")
+                # Crop Video
+                # Validate JSON format
+                input_video_path = Path("video_talk.mp4")
+                output_path = process_video(str(video_path), highlights_json)
 
 
 # Display transcription and highlights side by side
@@ -204,7 +197,3 @@ if st.session_state["transcription"] and st.session_state["highlights"]:
         st.subheader("Highlights")
         # st.write(type(highlights))
         st.markdown(st.session_state["highlights"], unsafe_allow_html=True)
-
-
-
-# pip3 install torch --no-cache-dir
