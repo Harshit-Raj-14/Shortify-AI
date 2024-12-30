@@ -1,1 +1,7 @@
-pip3 install torch --no-cache-dir
+```
+pip install -r requirements.txt
+```
+
+```
+streamlit run app.py
+```
