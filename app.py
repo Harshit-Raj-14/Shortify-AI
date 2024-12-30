@@ -193,7 +193,7 @@ def process_video(video_file, highlight_json):
 
 
 # Streamlit app interface
-st.title('Video Transcriber and Highlighter')
+st.title('Shortify AI')
 
 # Initialize session state for transcription and highlights
 if "transcription" not in st.session_state:
