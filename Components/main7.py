@@ -14,7 +14,7 @@ import tempfile
 import re
 from PIL import ImageFont
 import cv2
-
+import whisper
 
 load_dotenv()
 
@@ -222,12 +222,12 @@ def process_video(video_file, highlight_json):
                 text = words[word_index]
                 
                 # Position the text in the center
-                text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 4)
+                text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
                 text_x = (frame.shape[1] - text_size[0]) // 2
                 text_y = height - 50
                 
                 # Overlay the text on the frame
-                cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
+                cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                 
                 # Increment word index after the word stays on screen for the designated number of frames
                 if frame_idx % frames_per_word == 0:

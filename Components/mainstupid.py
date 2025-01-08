@@ -14,12 +14,22 @@ import tempfile
 import re
 from PIL import ImageFont
 import cv2
-
+from openai import OpenAI
+import openai
 
 load_dotenv()
 
+# client = OpenAI(
+#     api_key=os.environ.get("OPENAI_API_KEY"),  # This is the default and can be omitted
+# )
+
+client = openai.Client(api_key='OPENAI_API_KEY')
+
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=GOOGLE_API_KEY)
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = OPENAI_API_KEY
 
 transcribe_prompt = '''
 Please transcribe the following audio and provide the transcription in JSON format. 
@@ -102,20 +112,33 @@ def transcribe_audio(audio_file_path):
     try:
         print("Transcribing started...")
         st.write("Transcribing audio...")
-        model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
-        audio_file = genai.upload_file(path=audio_file_path)
-        response = model.generate_content(
-        [
-            transcribe_prompt,
-            audio_file
-        ]
-        )
+        
+        with open(audio_file_path, "rb") as audio_file:
+            response = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                response_format="verbose_json",
+                timestamp_granularities=["segment"]
+            )
+        
+        # Return the result in the requested format
         print("Transcribing Completed✅")
-        return response.text
+        return {
+            "text": response.text,
+            "start": format_timestamp(response.segments[0].start),
+            "end": format_timestamp(response.segments[-1].end)
+        }
+        
     except Exception as e:
         st.error(f"Transcription Error: {e}")
         return ""
-
+    
+def format_timestamp(seconds):
+    """Convert seconds to HH:MM:SS format"""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    seconds = int(seconds % 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def generate_highlights(video_file, transcription):
@@ -222,12 +245,12 @@ def process_video(video_file, highlight_json):
                 text = words[word_index]
                 
                 # Position the text in the center
-                text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 4)
+                text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
                 text_x = (frame.shape[1] - text_size[0]) // 2
                 text_y = height - 50
                 
                 # Overlay the text on the frame
-                cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
+                cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                 
                 # Increment word index after the word stays on screen for the designated number of frames
                 if frame_idx % frames_per_word == 0:
