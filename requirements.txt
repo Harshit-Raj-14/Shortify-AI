@@ -6,6 +6,7 @@ pathlib
 moviepy
 python-dotenv
 streamlit
-# faster-whisper
 torch
+Pillow
+opencv-python
 
