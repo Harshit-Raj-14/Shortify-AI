@@ -3,6 +3,7 @@ import tempfile
 import os
 import google.generativeai as genai
 from moviepy import VideoFileClip
+from moviepy import *
 import moviepy as mp
 from dotenv import load_dotenv
 import json
@@ -10,6 +11,8 @@ from pathlib import Path
 from datetime import datetime
 from io import BytesIO
 import tempfile
+import re
+from PIL import ImageFont
 
 load_dotenv()
 
@@ -19,6 +22,7 @@ genai.configure(api_key=GOOGLE_API_KEY)
 transcribe_prompt = '''
 Please transcribe the following audio and provide the transcription in JSON format. 
 The JSON should include each segment of text with its corresponding start and end timestamps. 
+The start and end time stamp should all be correct and always less than the total length of audio.[important] start and end time can enver exceed length of audio clip given to you.
 Each entry in the JSON should have the following structure: I want only the json nothing else.
 { "text": "Transcribed text here", "start": "Start timestamp", "end": "End timestamp" }
 Don't print anything else.
@@ -32,7 +36,8 @@ If the end time is more than length of clip make it one second less than the tot
 Follow this format and return valid JSON SCHEMA:
 [{
   "start": "Start time of the clip in format: HH:MM:SS, put values even if its 0",
-  "content": "Highlight Text",
+  "highlight": "Highlight Text",
+  "transcript": "What part of trancript was said between start and end",
   "end": "End Time for the highlighted clip in format: HH:MM:SS, put values even if its 0"
 }]
 It should be one continuous clip as it will then be cut from the video and uploaded as a TikTok video. So only have one start, end, and content.
@@ -109,11 +114,13 @@ def transcribe_audio(audio_file_path):
         st.error(f"Transcription Error: {e}")
         return ""
 
-def generate_highlights(transcription):
+def generate_highlights(video_file, transcription):
     try:
         print("highlighting started...")
+        video = mp.VideoFileClip(video_file)
+        duration = str(video.duration)
         model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
-        response = model.generate_content("highlight_system_prompt="+highlight_system_prompt+" AND transcription="+transcription)
+        response = model.generate_content("highlight_system_prompt="+highlight_system_prompt+" AND transcription="+transcription+"Also note that the start and end time should not exceed the total duration of video ="+duration+".If you only when it exceeds then take the middle 25 to 30s of the clip and put it as start and end time. Don't forget to do this.")
         highlight_response = response.text.strip()
         # print((type(highlight_response))) #-> list
         print(highlight_response)
@@ -178,10 +185,39 @@ def process_video(video_file, highlight_json):
         )
         print("Cropped and trimmed ✅")
 
-        # Save to a temporary file instead of BytesIO
+        # split transcript into words
+        transcript = highlight_json[0]["transcript"]  # Extract transcript text
+        print(transcript)
+        cleaned_transcript = re.sub(r"[^\w\s]", "", transcript)  # Remove non-alphanumeric characters except spaces
+        words = cleaned_transcript.split()
+        print(words)
+        text_clips = []
+        num_words = len(words)
+        duration = cropped_video.duration
+        default_font = ImageFont.load_default()  # Fallback to Pillow's default font
+        # Add two words per second
+        for i in range(0, num_words, 2):
+            text = " ".join(words[i:i + 2])
+            start_time = i // 2
+            if start_time >= duration:
+                break
+
+            text_clip = TextClip(
+                text,
+                # font="arial.ttf",
+                font_size=20,  
+                color="white"
+            ).set_position(("center", "bottom")).set_start(start_time).set_duration(1)
+            text_clips.append(text_clip)
+
+        # Combine the text clips with the cropped video
+        final_video = CompositeVideoClip([cropped_video] + text_clips)
+        print("Added text overlays ✅")
+
+        # Save to a temporary file
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
             temp_file_path = temp_file.name
-            cropped_video.write_videofile(temp_file_path, codec="libx264", audio_codec="aac")
+            final_video.write_videofile(temp_file_path, codec="libx264", audio_codec="aac")
             print(f"Saved processed video to {temp_file_path}")
 
         return temp_file_path
@@ -215,7 +251,7 @@ if video_file is not None:
                 st.session_state["transcription"] = transcription_text
 
                 # Generate highlights based on the transcription
-                highlights_json = generate_highlights(transcription_text)
+                highlights_json = generate_highlights(video_path, transcription_text)
                 st.session_state["highlights"] = highlights_json
 
                 # Crop Video
