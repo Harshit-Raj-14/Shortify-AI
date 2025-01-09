@@ -3,6 +3,7 @@ import tempfile
 import os
 import google.generativeai as genai
 from moviepy import VideoFileClip
+from moviepy import *
 import moviepy as mp
 from dotenv import load_dotenv
 import json
@@ -10,6 +11,10 @@ from pathlib import Path
 from datetime import datetime
 from io import BytesIO
 import tempfile
+import re
+from PIL import ImageFont
+import cv2
+
 
 load_dotenv()
 
@@ -19,20 +24,22 @@ genai.configure(api_key=GOOGLE_API_KEY)
 transcribe_prompt = '''
 Please transcribe the following audio and provide the transcription in JSON format. 
 The JSON should include each segment of text with its corresponding start and end timestamps. 
+The start and end time stamp should all be correct and always less than the total length of audio.[important] start and end time can enver exceed length of audio clip given to you.
 Each entry in the JSON should have the following structure: I want only the json nothing else.
 { "text": "Transcribed text here", "start": "Start timestamp", "end": "End timestamp" }
 Don't print anything else.
 '''
 
 highlight_system_prompt = '''
-Based on the transcription provided by the user with start and end times, I want only one highlight of less than 1 minute that can be directly converted into a short. 
+Based on the transcription provided by the user with start and end times, I want only one highlight of less than 30 seconds that can be directly converted into a short. 
 Highlight it so that it's interesting and also keep the timestamps for the clip to start and end. 
 If the end time is more than length of clip make it one second less than the total length of clip. Only select a continuous part of the video.
 
 Follow this format and return valid JSON SCHEMA:
 [{
   "start": "Start time of the clip in format: HH:MM:SS, put values even if its 0",
-  "content": "Highlight Text",
+  "highlight": "Highlight Text",
+  "transcript": "What part of trancript was said between start and end",
   "end": "End Time for the highlighted clip in format: HH:MM:SS, put values even if its 0"
 }]
 It should be one continuous clip as it will then be cut from the video and uploaded as a TikTok video. So only have one start, end, and content.
@@ -109,11 +116,15 @@ def transcribe_audio(audio_file_path):
         st.error(f"Transcription Error: {e}")
         return ""
 
-def generate_highlights(transcription):
+
+
+def generate_highlights(video_file, transcription):
     try:
         print("highlighting started...")
+        video = mp.VideoFileClip(video_file)
+        duration = str(video.duration)
         model = genai.GenerativeModel("models/gemini-1.5-pro-latest")
-        response = model.generate_content("highlight_system_prompt="+highlight_system_prompt+" AND transcription="+transcription)
+        response = model.generate_content("highlight_system_prompt="+highlight_system_prompt+" AND transcription="+transcription+"Also note that the start and end time should not exceed the total duration of video ="+duration+".If you only when it exceeds then take the middle 25 to 30s of the clip and put it as start and end time. Don't forget to do this.")
         highlight_response = response.text.strip()
         # print((type(highlight_response))) #-> list
         print(highlight_response)
@@ -165,30 +176,83 @@ def process_video(video_file, highlight_json):
         print(start_time)
         print(end_time)
 
-        # Load the video
-        video = mp.VideoFileClip(video_file)
-        # Trim video to highlight duration
-        trimmed_video = video.subclipped(start_time, end_time)
-        # Crop to 9:16 aspect ratio
-        width, height = trimmed_video.size
-        new_width = int(height * 9 / 16)
+        # Load video
+        video = VideoFileClip(video_file).subclipped(start_time, end_time)
+        fps = int(video.fps)
+        audio = video.audio
+        cap = cv2.VideoCapture(video_file)
+        
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        aspect_ratio = 9 / 16
+        new_width = int(height * aspect_ratio)
         x_center = width // 2
-        cropped_video = trimmed_video.cropped(
-            x1=x_center - new_width // 2, x2=x_center + new_width // 2
-        )
-        print("Cropped and trimmed ✅")
+        x1, x2 = x_center - new_width // 2, x_center + new_width // 2
+        
+        # Process transcript
+        transcript = highlight_json[0]["transcript"]
+        cleaned_transcript = re.sub(r"[^\w\s]", "", transcript)
+        words = cleaned_transcript.split()
+        
+        # Setup video writer
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        temp_file_path = temp_file.name
+        out = cv2.VideoWriter(temp_file_path, fourcc, fps, (new_width, height))
+        
+        word_index = 0
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_time * fps)
+        total_frames = int((end_time - start_time) * fps)
+        
+        frames_per_word = 30  # You can increase this value to make the words appear longer
+        word_index = 0
+        frame_idx = 0
 
-        # Save to a temporary file instead of BytesIO
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
-            temp_file_path = temp_file.name
-            cropped_video.write_videofile(temp_file_path, codec="libx264", audio_codec="aac")
-            print(f"Saved processed video to {temp_file_path}")
+        # Loop through each frame of the video
+        for frame_idx in range(total_frames):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            # Crop the frame to the desired aspect ratio
+            frame = frame[:, x1:x2]
+            
+            # Show the current word if the frame index is within the time window for that word
+            if word_index < len(words) and frame_idx // frames_per_word < word_index + 1:
+                text = words[word_index]
+                
+                # Position the text in the center
+                text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 4)
+                text_x = (frame.shape[1] - text_size[0]) // 2
+                text_y = height - 50
+                
+                # Overlay the text on the frame
+                cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
+                
+                # Increment word index after the word stays on screen for the designated number of frames
+                if frame_idx % frames_per_word == 0:
+                    word_index += 1
 
-        return temp_file_path
+            # Write the frame to the video output
+            out.write(frame)
 
+        cap.release()
+        out.release()
+        
+        # Add audio
+        final_video = VideoFileClip(temp_file_path)
+        # final_video = final_video.set_audio(audio)
+        new_audioclip = CompositeAudioClip([audio])
+        final_video.audio = new_audioclip
+        output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+        final_video.write_videofile(output_file, codec="libx264", audio_codec="aac")
+        
+        return output_file
+    
     except Exception as e:
-        st.error(f"Error processing video: {e}")
+        print(f"Error processing video: {e}")
         return None
+
 
 
 
@@ -215,7 +279,7 @@ if video_file is not None:
                 st.session_state["transcription"] = transcription_text
 
                 # Generate highlights based on the transcription
-                highlights_json = generate_highlights(transcription_text)
+                highlights_json = generate_highlights(video_path, transcription_text)
                 st.session_state["highlights"] = highlights_json
 
                 # Crop Video
@@ -228,6 +292,9 @@ if video_file is not None:
                 if processed_video_path:
                     st.success("Video processed successfully!")
 
+                    # Display processed video for preview
+                    st.video(processed_video_path)
+                    
                     # Generate a download link for the processed video
                     with open(processed_video_path, "rb") as file:
                         video_bytes = file.read()

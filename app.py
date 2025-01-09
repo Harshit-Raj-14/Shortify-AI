@@ -31,21 +31,37 @@ Don't print anything else.
 '''
 
 highlight_system_prompt = '''
-Based on the transcription provided by the user with start and end times, I want only one highlight of less than 30 seconds that can be directly converted into a short. 
-Highlight it so that it's interesting and also keep the timestamps for the clip to start and end. 
-If the end time is more than length of clip make it one second less than the total length of clip. Only select a continuous part of the video.
+Based on the transcription provided by the user with start and end times, I want three highlights of less than 30 seconds each. 
+Each highlight should be continuous, interesting, and non-overlapping. Provide the timestamps for the start and end of each clip.
+
+If any end time is more than the length of the clip, adjust it to be one second less than the total length of the clip. 
+If the clip is too short, distribute the highlights equally across the duration of the video.
 
 Follow this format and return valid JSON SCHEMA:
-[{
-  "start": "Start time of the clip in format: HH:MM:SS, put values even if its 0",
-  "highlight": "Highlight Text",
-  "transcript": "What part of trancript was said between start and end",
-  "end": "End Time for the highlighted clip in format: HH:MM:SS, put values even if its 0"
-}]
-It should be one continuous clip as it will then be cut from the video and uploaded as a TikTok video. So only have one start, end, and content.
+[
+  {
+    "start": "Start time of the first clip in HH:MM:SS format",
+    "highlight": "Highlight text for the first clip",
+    "transcript": "What part of transcript was said between start and end of the first clip",
+    "end": "End time of the first clip in HH:MM:SS format"
+  },
+  {
+    "start": "Start time of the second clip in HH:MM:SS format",
+    "highlight": "Highlight text for the second clip",
+    "transcript": "What part of transcript was said between start and end of the second clip",
+    "end": "End time of the second clip in HH:MM:SS format"
+  },
+  {
+    "start": "Start time of the third clip in HH:MM:SS format",
+    "highlight": "Highlight text for the third clip",
+    "transcript": "What part of transcript was said between start and end of the third clip",
+    "end": "End time of the third clip in HH:MM:SS format"
+  }
+]
 
 Don't say anything else, just return proper JSON. No explanation.
 '''
+
 
 def parse_time(time_str):
     formats = [
@@ -146,13 +162,13 @@ def generate_highlights(video_file, transcription):
             # start_time = float(data_json[0]["start"])
             # end_time = float(data_json[0]["end"])
             # Convert to integers
-            start_time_int = int((parse_time(data_json[0]["start"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
-            end_time_int = int((parse_time(data_json[0]["end"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
-            print("Got the start and end time ✅")
+            # start_time_int = int((parse_time(data_json[0]["start"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
+            # end_time_int = int((parse_time(data_json[0]["end"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
+            # print("Got the start and end time ✅")
             # print(f"Start Time: {start_time}")
             # print(f"End Time: {end_time}")
-            print(f"Start Time: {start_time_int}")
-            print(f"End Time: {end_time_int}")
+            # print(f"Start Time: {start_time_int}")
+            # print(f"End Time: {end_time_int}")
             return data_json
 
         except json.JSONDecodeError as e:
@@ -169,90 +185,101 @@ import base64
 
 def process_video(video_file, highlight_json):
     try:
-        # Parse highlight JSON
-        start_time = int((parse_time(highlight_json[0]["start"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
-        end_time = int((parse_time(highlight_json[0]["end"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
-        print("Got the start and end time ✅")
-        print(start_time)
-        print(end_time)
+        video_clips = []
+        main_video = mp.VideoFileClip(video_file)
+        # Process each highlight
+        for i, highlight in enumerate(highlight_json):
+            # Parse highlight JSON
+            start_time = int((parse_time(highlight_json[i]["start"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
+            end_time = int((parse_time(highlight_json[i]["end"]) - datetime.strptime("00:00:00.000", "%H:%M:%S.%f")).total_seconds())
+            print("Got the start and end time ✅")
+            print(start_time)
+            print(end_time)
+            total_duration = main_video.duration
+            if(start_time>=total_duration): 
+                start_time=total_duration/3
+                end_time=start_time+20
+            if(end_time>=total_duration):
+                start_time=total_duration/3
+                end_time=start_time+20
 
-        # Load video
-        video = VideoFileClip(video_file).subclipped(start_time, end_time)
-        fps = int(video.fps)
-        audio = video.audio
-        cap = cv2.VideoCapture(video_file)
-        
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        aspect_ratio = 9 / 16
-        new_width = int(height * aspect_ratio)
-        x_center = width // 2
-        x1, x2 = x_center - new_width // 2, x_center + new_width // 2
-        
-        # Process transcript
-        transcript = highlight_json[0]["transcript"]
-        cleaned_transcript = re.sub(r"[^\w\s]", "", transcript)
-        words = cleaned_transcript.split()
-        
-        # Setup video writer
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        temp_file_path = temp_file.name
-        out = cv2.VideoWriter(temp_file_path, fourcc, fps, (new_width, height))
-        
-        word_index = 0
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_time * fps)
-        total_frames = int((end_time - start_time) * fps)
-        
-        frames_per_word = 30  # You can increase this value to make the words appear longer
-        word_index = 0
-        frame_idx = 0
 
-        # Loop through each frame of the video
-        for frame_idx in range(total_frames):
-            ret, frame = cap.read()
-            if not ret:
-                break
+            # Load video
+            video = main_video.subclipped(start_time, end_time)
+            fps = int(video.fps)
+            audio = video.audio
+            cap = cv2.VideoCapture(video_file)
             
-            # Crop the frame to the desired aspect ratio
-            frame = frame[:, x1:x2]
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            aspect_ratio = 9 / 16
+            new_width = int(height * aspect_ratio)
+            x_center = width // 2
+            x1, x2 = x_center - new_width // 2, x_center + new_width // 2
             
-            # Show the current word if the frame index is within the time window for that word
-            if word_index < len(words) and frame_idx // frames_per_word < word_index + 1:
-                text = words[word_index]
-                
-                # Position the text in the center
-                text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 4)
-                text_x = (frame.shape[1] - text_size[0]) // 2
-                text_y = height - 50
-                
-                # Overlay the text on the frame
-                cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
-                
-                # Increment word index after the word stays on screen for the designated number of frames
-                if frame_idx % frames_per_word == 0:
-                    word_index += 1
+            # Process transcript
+            transcript = highlight_json[i]["transcript"]
+            cleaned_transcript = re.sub(r"[^\w\s]", "", transcript)
+            words = cleaned_transcript.split()
+            
+            # Setup video writer
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+            temp_file_path = temp_file.name
+            out = cv2.VideoWriter(temp_file_path, fourcc, fps, (new_width, height))
+            
+            word_index = 0
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_time * fps)
+            total_frames = int((end_time - start_time) * fps)
+            
+            frames_per_word = 30  # You can increase this value to make the words appear longer
+            word_index = 0
+            frame_idx = 0
 
-            # Write the frame to the video output
-            out.write(frame)
+            # Loop through each frame of the video
+            for frame_idx in range(total_frames):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                
+                # Crop the frame to the desired aspect ratio
+                frame = frame[:, x1:x2]
+                
+                # Show the current word if the frame index is within the time window for that word
+                if word_index < len(words) and frame_idx // frames_per_word < word_index + 1:
+                    text = words[word_index]
+                    
+                    # Position the text in the center
+                    text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 4)
+                    text_x = (frame.shape[1] - text_size[0]) // 2
+                    text_y = height - 50
+                    
+                    # Overlay the text on the frame
+                    cv2.putText(frame, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
+                    
+                    # Increment word index after the word stays on screen for the designated number of frames
+                    if frame_idx % frames_per_word == 0:
+                        word_index += 1
 
-        cap.release()
-        out.release()
-        
-        # Add audio
-        final_video = VideoFileClip(temp_file_path)
-        # final_video = final_video.set_audio(audio)
-        new_audioclip = CompositeAudioClip([audio])
-        final_video.audio = new_audioclip
-        output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-        final_video.write_videofile(output_file, codec="libx264", audio_codec="aac")
-        
-        return output_file
+                # Write the frame to the video output
+                out.write(frame)
+
+            cap.release()
+            out.release()
+            
+            # Add audio
+            final_video = VideoFileClip(temp_file_path)
+            # final_video = final_video.set_audio(audio)
+            new_audioclip = CompositeAudioClip([audio])
+            final_video.audio = new_audioclip
+            output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+            final_video.write_videofile(output_file, codec="libx264", audio_codec="aac")
+            video_clips.append(output_file)
+        return video_clips
     
     except Exception as e:
         print(f"Error processing video: {e}")
         return None
-
 
 
 
@@ -271,7 +298,7 @@ if video_file is not None:
     video_path = save_uploaded_file(video_file)  # Save the uploaded file and get the path
     st.video(video_path)
 
-    if st.button('Process Video'):
+    if st.button('Generate YT Shorts'):
         with st.spinner('Processing video...'):
             audio_path = extract_audio_from_video(video_path)
             if audio_path:
@@ -282,26 +309,31 @@ if video_file is not None:
                 highlights_json = generate_highlights(video_path, transcription_text)
                 st.session_state["highlights"] = highlights_json
 
-                # Crop Video
-                # input_video_path = Path("video_talk.mp4")
-                # output_path = process_video(str(video_path), highlights_json)
-
                 # Process the video
-                processed_video_path = process_video(str(video_path), highlights_json)
+                processed_video_paths = process_video(str(video_path), highlights_json)
 
-                if processed_video_path:
+                if processed_video_paths:
+                    st.session_state["processed_videos"] = processed_video_paths  # Save paths in session state
                     st.success("Video processed successfully!")
+                else:
+                    st.error("Failed to process the video.")
 
-                    # Generate a download link for the processed video
-                    with open(processed_video_path, "rb") as file:
-                        video_bytes = file.read()
+# Display processed videos and download links
+if "processed_videos" in st.session_state and st.session_state["processed_videos"]:
+    for i, processed_video_path in enumerate(st.session_state["processed_videos"]):
+        st.write(f"### YT Short {i + 1}")
+        st.video(processed_video_path)
 
-                    st.download_button(
-                        label="Download Video",
-                        data=video_bytes,
-                        file_name="yt_short.mp4",
-                        mime="video/mp4"
-                    )
+        # Generate a download link for the processed video
+        with open(processed_video_path, "rb") as file:
+            video_bytes = file.read()
+
+        st.download_button(
+            label=f"Download YT Short {i + 1}",
+            data=video_bytes,
+            file_name=f"yt_short_{i + 1}.mp4",
+            mime="video/mp4"
+        )
 
 
 # Display transcription and highlights side by side
