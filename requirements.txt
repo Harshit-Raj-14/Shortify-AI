@@ -11,3 +11,4 @@ Pillow
 opencv-python
 numpy
 opencv-python-headless
+opencv-contrib-python
